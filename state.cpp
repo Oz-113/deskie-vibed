@@ -72,6 +72,15 @@ void stateApplyVolume(int vol, int mute) {
   stateUnlock();
 }
 
+void stateApplyAudio(const int16_t* v) {
+  stateLock();
+  for (uint8_t i = 0; i < AUDIO_BANDS; i++) {
+    gState.spec[i] = (uint8_t)constrain(v[i], 0, 100);
+  }
+  gState.pulse = (uint8_t)constrain(v[AUDIO_BANDS], 0, 100);
+  stateUnlock();
+}
+
 void stateApplyNowPlaying(int state, const char* artist, const char* title) {
   stateLock();
   gState.np.state = (uint8_t)state;

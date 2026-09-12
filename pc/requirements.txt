@@ -20,6 +20,12 @@ comtypes>=1.2
 #   pip install pythonnet
 pythonnet>=3.0
 
+# ---- audio reactive spectrum ----------------------------------------------
+# WASAPI loopback capture of the default output device. No numpy needed - the
+# band analysis is a small pure-Python biquad bank.
+#   python controller.py --audio-test      # verify the capture
+pyaudiowpatch>=0.2.12
+
 # ---- optional: proper now-playing info (artist / title / play state) --------
 # Without it the script falls back to reading media window titles.
 # NOTE: winsdk has no wheels for Python 3.14 yet, so this may not install.

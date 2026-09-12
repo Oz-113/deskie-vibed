@@ -25,8 +25,10 @@ from __future__ import annotations
 import argparse
 import ctypes
 import ctypes.wintypes as wt
+import math
 import os
 import queue
+import struct
 import sys
 import threading
 import time
@@ -1068,6 +1070,191 @@ class NowPlayingBackend:
         return NowPlaying(0, "", "")
 
 
+AUDIO_BANDS = 8          # must match config.h on the board
+
+
+def _band_centres(fs: float, n: int = AUDIO_BANDS,
+                  lo: float = 60.0, hi: float = 3500.0) -> list:
+    """Log-spaced band centre frequencies, clamped below Nyquist."""
+    if hi > fs * 0.45:
+        hi = fs * 0.45
+    k = (hi / lo) ** (1.0 / max(1, n - 1))
+    return [lo * (k ** i) for i in range(n)]
+
+
+class _Biquad:
+    """RBJ band-pass biquad (constant peak gain) with an energy read-out."""
+
+    __slots__ = ("b0", "b1", "b2", "a1", "a2", "x1", "x2", "y1", "y2")
+
+    def __init__(self, f0: float, fs: float, q: float = 1.4) -> None:
+        w0 = 2.0 * math.pi * f0 / fs
+        alpha = math.sin(w0) / (2.0 * q)
+        a0 = 1.0 + alpha
+        self.b0 = alpha / a0
+        self.b1 = 0.0
+        self.b2 = -alpha / a0
+        self.a1 = (-2.0 * math.cos(w0)) / a0
+        self.a2 = (1.0 - alpha) / a0
+        self.x1 = self.x2 = self.y1 = self.y2 = 0.0
+
+    def energy(self, samples) -> float:
+        """Mean-square of the band-passed signal over 'samples'."""
+        b0, b1, b2, a1, a2 = self.b0, self.b1, self.b2, self.a1, self.a2
+        x1, x2, y1, y2 = self.x1, self.x2, self.y1, self.y2
+        acc = 0.0
+        for x in samples:
+            y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+            x2 = x1
+            x1 = x
+            y2 = y1
+            y1 = y
+            acc += y * y
+        self.x1, self.x2, self.y1, self.y2 = x1, x2, y1, y2
+        return acc / max(1, len(samples))
+
+
+# ---------------------------------------------------------------------------
+# Audio reactive spectrum - WASAPI loopback of the default output device
+#
+#   pyaudiowpatch (a PyAudio fork with loopback support) captures whatever is
+#   playing; a small biquad bank splits it into AUDIO_BANDS log-spaced bands
+#   which are turned into 0..100 levels plus a beat pulse. Only eight small
+#   numbers ever reach the board, so all of the DSP stays here.
+# ---------------------------------------------------------------------------
+class AudioBackend:
+    DB_SPAN     = 42.0          # dynamic range spread across the 0..100 scale
+    DB_CEIL_MIN = -24.0         # the AGC ceiling never falls below this
+    DB_GATE     = -70.0         # below this the input counts as silence
+
+    def __init__(self, gain_db: float = 0.0, verbose: bool = False) -> None:
+        self.ok      = False
+        self.note    = ""
+        self.levels  = [0] * AUDIO_BANDS
+        self.pulse   = 0
+        self.gain_db = gain_db
+        self.verbose = verbose
+        self._lock   = threading.Lock()
+        self._stop   = threading.Event()
+        self._avg    = 0.0
+        self._ceil   = -30.0        # adaptive AGC ceiling (dBFS)
+
+        try:
+            import pyaudiowpatch  # noqa: F401
+        except Exception:
+            self.note = "pyaudiowpatch not installed (pip install pyaudiowpatch)"
+            log(f"audio: {self.note}")
+            return
+
+        threading.Thread(target=self._run, name="audio-loopback",
+                         daemon=True).start()
+
+    # -- capture thread -----------------------------------------------------
+    def _run(self) -> None:
+        import pyaudiowpatch as pyaudio
+
+        pa = pyaudio.PyAudio()
+        try:
+            loop = pa.get_default_wasapi_loopback()
+            rate = int(loop["defaultSampleRate"])
+            ch   = max(1, int(loop["maxInputChannels"]))
+            dec  = max(1, int(round(rate / 8000.0)))      # -> ~8 kHz analysis rate
+            fs   = rate / dec
+            frame = 1024
+
+            filters = [_Biquad(f, fs) for f in _band_centres(fs)]
+            stream  = pa.open(format=pyaudio.paFloat32, channels=ch, rate=rate,
+                              input=True, input_device_index=loop["index"],
+                              frames_per_buffer=frame)
+            self.ok = True
+            log(f"audio: loopback '{loop['name']}' @ {rate} Hz, {ch} ch, "
+                f"{AUDIO_BANDS} bands, analysis {fs:.0f} Hz")
+        except Exception as e:
+            self.note = f"loopback unavailable: {e!r}"
+            log(f"audio: {self.note}")
+            try:
+                pa.terminate()
+            except Exception:
+                pass
+            return
+
+        try:
+            while not self._stop.is_set():
+                raw = stream.read(frame, exception_on_overflow=False)
+                n   = len(raw) // 4
+                try:
+                    vals = struct.unpack("<%df" % n, raw)
+                except struct.error:
+                    continue
+
+                # downmix to mono (the loopback device can expose >2 channels)
+                mono = [0.0] * (n // ch)
+                for i in range(len(mono)):
+                    b = i * ch
+                    s = 0.0
+                    for c in range(ch):
+                        s += vals[b + c]
+                    mono[i] = s / ch
+                mono = mono[::dec]            # crude decimation, fine for a VU
+
+                # per-band energy in dBFS
+                dbs  = [10.0 * math.log10(f.energy(mono) + 1e-12) + self.gain_db
+                        for f in filters]
+                peak = max(dbs)
+
+                if peak < self.DB_GATE:
+                    # silence: do not amplify the noise floor
+                    lv = [0] * AUDIO_BANDS
+                    self._ceil = max(self.DB_GATE, self._ceil - 1.0)
+                else:
+                    # auto-gain: the ceiling jumps to a new peak instantly and
+                    # falls back slowly, so the scale fits whatever the system
+                    # volume happens to be
+                    self._ceil = peak if peak > self._ceil else \
+                                 max(self.DB_CEIL_MIN, self._ceil - 0.6)
+                    floor = self._ceil - self.DB_SPAN
+                    lv = [int(max(0.0, min(100.0,
+                                           (d - floor) * 100.0 / self.DB_SPAN)))
+                          for d in dbs]
+
+                with self._lock:
+                    for i, v in enumerate(lv):
+                        cur = self.levels[i]
+                        # fast attack, gentle release
+                        self.levels[i] = v if v >= cur else max(v, cur - 6)
+                    low = (lv[0] + lv[1]) / 2.0
+                    self._avg = self._avg * 0.92 + low * 0.08
+                    if low > self._avg * 1.30 and low > 25:
+                        self.pulse = 100                     # beat!
+                    else:
+                        self.pulse = max(0, self.pulse - 12)
+        except Exception as e:
+            if not self._stop.is_set():
+                self.note = f"capture stopped: {e!r}"
+                log(f"audio: {self.note}")
+        finally:
+            for fn in (stream.stop_stream, stream.close):
+                try:
+                    fn()
+                except Exception:
+                    pass
+            try:
+                pa.terminate()
+            except Exception:
+                pass
+
+    # -- public -------------------------------------------------------------
+    def read(self):
+        """Return (levels[AUDIO_BANDS], pulse) - zeros when unavailable."""
+        if not self.ok:
+            return [0] * AUDIO_BANDS, 0
+        with self._lock:
+            return list(self.levels), self.pulse
+
+    def close(self) -> None:
+        self._stop.set()
+
+
 # ---------------------------------------------------------------------------
 # No-op stubs so every backend can be disabled from the command line
 # ---------------------------------------------------------------------------
@@ -1093,6 +1280,16 @@ class _NoVolume:
 class _NoNowPlaying:
     def poll(self) -> NowPlaying:
         return NowPlaying(0, "", "")
+
+
+class _NoAudio:
+    ok = False
+
+    def read(self):
+        return [0] * AUDIO_BANDS, 0
+
+    def close(self) -> None:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -1125,6 +1322,8 @@ class Bridge:
         self.media   = MediaBackend()
         self.nowp    = _NoNowPlaying() if args.no_nowplaying else \
                        NowPlayingBackend(args.verbose, args.np_proc)
+        self.audio   = _NoAudio() if args.no_audio else \
+                       AudioBackend(args.audio_gain, args.verbose)
 
         self.metrics: Metrics = Metrics()
         self.page             = "-"
@@ -1136,6 +1335,10 @@ class Bridge:
         self.detail_hz        = max(0.2, float(args.rate))
         # after we set the volume ourselves, ignore lagging reads for a moment
         self.vol_hold_until   = 0.0
+        # audio spectrum pacing
+        self.audio_hz         = max(1.0, float(args.audio_rate))
+        self.last_audio_line  = ""
+        self.last_audio_tx    = 0.0
 
     # -- incoming commands --------------------------------------------------
     def handle(self, line: str) -> None:
@@ -1194,6 +1397,7 @@ class Bridge:
         next_vol = now
         next_np  = now
         next_hel = now
+        next_aud = now
         deadline = (now + self.args.run_seconds) if self.args.run_seconds else None
 
         self.link.write(f"H,{PROTO_VERSION}")
@@ -1248,6 +1452,17 @@ class Bridge:
                         self.link.write(line)
                     next_np = now + 1.0 / NOWPLAY_HZ
 
+                # ---- audio spectrum (change driven + 1 s keepalive) -------
+                if now >= next_aud:
+                    levels, pulse = self.audio.read()
+                    line = "A," + ",".join(str(v) for v in levels) + "," + str(pulse)
+                    if (line != self.last_audio_line
+                            or (now - self.last_audio_tx) >= 1.0):
+                        self.last_audio_line = line
+                        self.last_audio_tx   = now
+                        self.link.write(line)
+                    next_aud = now + 1.0 / self.audio_hz
+
                 time.sleep(0.005)
 
         except KeyboardInterrupt:
@@ -1259,6 +1474,38 @@ class Bridge:
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+def audio_selftest(seconds: float = 12.0, gain: float = 0.0) -> int:
+    """`--audio-test`: print the live band levels so the capture can be checked."""
+    log("audio self-test - play some music --------------------------------")
+    ab = AudioBackend(gain, verbose=True)
+
+    for _ in range(20):                      # wait for the capture thread
+        if ab.ok or ab.note:
+            break
+        time.sleep(0.1)
+    if not ab.ok:
+        log(f"RESULT: FAILED - {ab.note or 'loopback did not start'}")
+        log("  -> pip install pyaudiowpatch")
+        return 1
+
+    log("press Ctrl+C to stop early")
+    end = time.time() + seconds
+    try:
+        while time.time() < end:
+            lv, pu = ab.read()
+            nums  = " ".join(f"{v:3d}" for v in lv)
+            graph = "".join("#" if v > 66 else "+" if v > 33 else "." for v in lv)
+            print(f"  [{nums}]  beat={pu:3d}  {graph}", flush=True)
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        ab.close()
+
+    log("RESULT: capture finished - the levels should have moved with the music")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="PC side bridge for the ESP32-S3 UART Volume Controller")
@@ -1281,6 +1528,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rate", type=float, default=SUMMARY_HZ,
                    help=f"metric updates per second sent to the board "
                         f"(default {SUMMARY_HZ:g})")
+    p.add_argument("--no-audio", action="store_true",
+                   help="disable the audio reactive spectrum")
+    p.add_argument("--audio-rate", type=float, default=25.0,
+                   help="spectrum updates per second sent to the board (default 25)")
+    p.add_argument("--audio-gain", type=float, default=0.0, metavar="DB",
+                   help="extra gain in dB applied to every band (default 0)")
+    p.add_argument("--audio-test", action="store_true",
+                   help="print the live band levels (no serial port) and exit")
     p.add_argument("--selftest", action="store_true",
                    help="test reading/writing the master volume and exit")
     p.add_argument("--dry-run", action="store_true",
@@ -1305,6 +1560,9 @@ def main(argv=None) -> int:
 
     if args.selftest:
         return volume_selftest()
+
+    if args.audio_test:
+        return audio_selftest(12.0, args.audio_gain)
 
     if args.scan:
         log("probing serial ports for the board ...")

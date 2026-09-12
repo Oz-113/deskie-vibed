@@ -95,6 +95,10 @@ struct Runtime {
   uint8_t  gifIndex   = 0;              // animation currently playing
   uint32_t lastUserMs = 0;              // last user interaction (timeouts)
   bool     uiDirty    = true;           // force a full redraw on the next frame
+
+  // audio reactive spectrum, fed by the PC ("A," messages)
+  uint8_t  spec[AUDIO_BANDS] = { 0 };   // 0..100 per band
+  uint8_t  pulse             = 0;       // beat envelope, 0..100
 };
 
 // ---------------------------------------------------------------------------
@@ -115,6 +119,7 @@ void stateApplySummary(int cpu, int ram, int gpu, int vram);
 void stateApplyDetail(const int16_t* v);
 void stateApplyVolume(int vol, int mute);
 void stateApplyNowPlaying(int state, const char* artist, const char* title);
+void stateApplyAudio(const int16_t* v);   // AUDIO_BANDS levels + 1 pulse
 void stateMarkPcSeen(void);
 
 // Helpers

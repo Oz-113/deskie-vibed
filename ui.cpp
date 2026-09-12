@@ -72,6 +72,11 @@ uint32_t makeSig(const Runtime& st, uint16_t animFrame) {
 
   for (const char* p = st.np.title;  *p; ++p) h = sigMix(h, (uint8_t)*p);
   for (const char* p = st.np.artist; *p; ++p) h = sigMix(h, (uint8_t)*p);
+
+#if ENABLE_SPECTRUM
+  for (uint8_t i = 0; i < AUDIO_BANDS; i++) h = sigMix(h, st.spec[i]);
+  h = sigMix(h, st.pulse);
+#endif
   return h;
 }
 
@@ -345,6 +350,54 @@ void drawIdle(const Runtime& st, uint16_t accent, uint16_t hi) {
 
   fitText(artist, 122, 1);
   if (artist[0]) textShadow(artist, 133, 213, 1, hi);
+}
+
+// ---------------------------------------------------------------------------
+//  Audio reactive spectrum
+//    Radial bars over the upper half of the ring (SPEC_START_DEG..SPEC_END_DEG)
+//    so the bottom stays free for the now-playing ticker. Mirrored, with band 0
+//    (bass) at 12 o'clock and the treble spreading towards the arc ends.
+// ---------------------------------------------------------------------------
+void drawSpectrum(const Runtime& st, uint16_t accent, uint16_t hi) {
+#if ENABLE_SPECTRUM
+  uint16_t sum = 0;
+  for (uint8_t i = 0; i < AUDIO_BANDS; i++) sum += st.spec[i];
+  if (sum == 0 && st.pulse == 0) return;             // silence -> nothing to draw
+
+  const float span = (float)(SPEC_END_DEG - SPEC_START_DEG);
+  const float half = span * 0.5f;
+  const float seg  = span / SPEC_SEGMENTS;
+  const uint16_t col = (st.pulse > 55) ? hi : accent; // flash on the beat
+
+  for (int i = 0; i < SPEC_SEGMENTS; i++) {
+    const float a0 = SPEC_START_DEG + i * seg + SPEC_GAP_DEG * 0.5f;
+    const float a1 = a0 + (seg - SPEC_GAP_DEG);
+    const float am = (a0 + a1) * 0.5f;
+
+    const float dist = (am > 180.0f) ? (am - 180.0f) : (180.0f - am);
+    float bf = dist * (AUDIO_BANDS - 1) / half;
+    int   b0 = (int)bf;
+    if (b0 < 0) b0 = 0;
+    if (b0 > AUDIO_BANDS - 1) b0 = AUDIO_BANDS - 1;
+    const int b1 = (b0 + 1 < AUDIO_BANDS) ? b0 + 1 : AUDIO_BANDS - 1;
+    const float t = bf - b0;
+
+    const int v = (int)(st.spec[b0] * (1.0f - t) + st.spec[b1] * t);
+    if (v <= 0) continue;
+
+    // gamma so that mid levels still give a clearly visible bar
+    const int vg = (int)(100.0f * powf(v / 100.0f, SPEC_GAMMA) + 0.5f);
+    const int r2 = SPEC_R_INNER + (SPEC_R_MAX - SPEC_R_INNER) * vg / 100;
+    spr.drawSmoothArc(SCR_CX, SCR_CY, r2, SPEC_R_INNER,
+                      (uint32_t)a0, (uint32_t)a1, col, 0x0000, false);
+  }
+
+  if (st.pulse > 0) {                                 // beat ring
+    const int w = 1 + (SPEC_PULSE_W * st.pulse) / 100;
+    spr.drawSmoothArc(SCR_CX, SCR_CY, SPEC_PULSE_R, SPEC_PULSE_R - w,
+                      SPEC_START_DEG, SPEC_END_DEG, hi, 0x0000, false);
+  }
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -628,7 +681,8 @@ bool uiRender(Animation& anim, bool frameLoaded) {
 
   if (s_mode == MODE_IDLE) {
     spr.pushImage(0, 0, SCR_W, SCR_H, gFrameBuf);
-    drawIdle(st, accent, hi);
+    drawSpectrum(st, accent, hi);          // ring bars
+    drawIdle(st, accent, hi);              // ticker + ornament on top
   } else {
     dispDimCopy(1);                        // dimmed glass background
     spr.pushImage(0, 0, SCR_W, SCR_H, gDimBuf);

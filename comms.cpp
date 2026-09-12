@@ -154,6 +154,13 @@ static void handleLine(char* line) {
       break;
     }
 
+    case 'A': {                     // A,<b0>,..,<b7>,<pulse>
+      int16_t v[AUDIO_BANDS + 1];
+      memset(v, 0, sizeof(v));
+      if (parseInts(rest, v, AUDIO_BANDS + 1) >= AUDIO_BANDS) stateApplyAudio(v);
+      break;
+    }
+
     case 'P':                       // ping
       Serial.print("PONG\n");
       break;

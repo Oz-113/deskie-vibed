@@ -143,3 +143,23 @@ static const GifPreset GIF_TABLE[GIF_COUNT] = {
 #define TASK_STACK_COMM      4096
 #define TASK_STACK_INPUT     3072
 #define TASK_STACK_RENDER    8192
+
+// ============================================================================
+//  7. AUDIO REACTIVE SPECTRUM
+// ============================================================================
+//  The PC captures the system audio (WASAPI loopback) and sends eight
+//  log-spaced band levels plus a beat pulse as "A,<b0>..<b7>,<pulse>".
+//  The board only draws them as radial bars - all the DSP stays on the PC.
+// ----------------------------------------------------------------------------
+#define ENABLE_SPECTRUM      1        // 0 = ignore the A, messages and draw nothing
+#define AUDIO_BANDS          8        // must match AUDIO_BANDS in controller.py
+#define SPEC_SEGMENTS        36       // radial bars drawn around the ring
+#define SPEC_GAP_DEG         2        // gap between bars, in degrees
+#define SPEC_R_INNER         92       // inner radius of a bar (length 0)
+#define SPEC_R_MAX           118      // radius when a band is at 100 %
+#define SPEC_GAMMA           0.62f    // <1 boosts mid levels into visible bars
+#define SPEC_START_DEG       80       // arc range for the bars, 0 = 6 o'clock,
+#define SPEC_END_DEG         280      // clockwise. The upper half leaves the
+                                      // bottom free for the now-playing ticker.
+#define SPEC_PULSE_R         84       // radius of the beat pulse ring (inside bars)
+#define SPEC_PULSE_W         3        // extra thickness of that ring at pulse 100

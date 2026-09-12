@@ -20,6 +20,9 @@ CPU / RAM / GPU data by a small Python bridge over the USB serial link.
   hotspot, memory temperature, GPU board power, fan speed, and VRAM used-total.
 * **Now-playing ticker** on the idle screen with a rotating vector ornament, all tinted from
   the animation's palette.
+* **Audio reactive spectrum**: eight log-spaced bands drawn as a mirrored radial ring over the
+  upper half of the display, with a beat flash. All the DSP runs on the PC, so the board only
+  receives eight small numbers.
 * **Animations** stored in LittleFS as raw RGB565 frames, uploadable straight from the
   Arduino IDE.
 * **Dual-core FreeRTOS firmware**: serial + input on core 0, rendering on core 1, with
@@ -141,6 +144,7 @@ by both sides.
 | `E,<13 values>` | detail payload, fixed order (see below) |
 | `V,<volume>,<mute>` | current master volume 0..100 and mute flag |
 | `T,<state>,<artist>\|<title>` | now playing; state 0 none / 1 playing / 2 paused |
+| `A,<b0>..<b7>,<pulse>` | audio spectrum: eight band levels (0..100) plus a beat pulse |
 | `P` | ping (the board answers `PONG`) |
 
 `E` field order:
@@ -202,6 +206,10 @@ python controller.py --port COM5 -v
 | `--scan` | probe every port for the board and exit |
 | `--selftest` | test master-volume read **and** write, then exit |
 | `--rate N` | metric updates per second sent to the board (default 1) |
+| `--audio-test` | print the live audio band levels (no serial port) and exit |
+| `--audio-rate N` | spectrum updates per second sent to the board (default 25) |
+| `--audio-gain DB` | extra gain applied to every band (default 0) |
+| `--no-audio` | disable the audio reactive spectrum |
 | `--np-proc NAME` | extra media process to watch for now playing (repeatable) |
 | `--no-volume` / `--no-nowplaying` | disable those features |
 | `--no-pdh` / `--no-lhm` | disable a GPU backend |
@@ -252,7 +260,7 @@ failing to start.
 
 | Screen | Shows | Controls |
 |--------|-------|----------|
-| **IDLE** | the animation, plus a now-playing ticker with a rotating vector ornament | turn = open the menu |
+| **IDLE** | the animation, the audio spectrum ring, and a now-playing ticker with a rotating vector ornament | turn = open the menu |
 | **MENU** | four page tiles | turn = move, OK = open, hold = close |
 | **MONITOR** | CPU / RAM / GPU / VRAM gauges spread around the ring, each with its `%`, the selected one large in the centre | turn = pick, OK = detail, hold = menu |
 | **DETAIL** | one component full screen: big gauge plus temperature / power / clock / threads / used-total | turn = cycle component, hold = monitor |
@@ -339,6 +347,28 @@ Keep `prefix` short-ish (under ~24 characters) — it is drawn in the centre of 
 Also remember each frame costs 115 200 bytes: the LittleFS partition is ~13.4 MB, so about 115
 frames fit in total.
 
+### Audio reactive spectrum
+
+The PC captures the **default output device** with WASAPI loopback (`pyaudiowpatch`), splits it
+into `AUDIO_BANDS` log-spaced bands with a small biquad bank, applies auto-gain, detects beats and
+sends `A,<b0>..<b7>,<pulse>` roughly 25 times a second. The board only draws the numbers:
+
+| Define | Meaning |
+|--------|---------|
+| `ENABLE_SPECTRUM` | `0` to ignore the `A,` messages completely |
+| `AUDIO_BANDS` | band count - must match `controller.py` |
+| `SPEC_SEGMENTS` / `SPEC_GAP_DEG` | number of bars and the gap between them |
+| `SPEC_R_INNER` / `SPEC_R_MAX` | bar length at 0 % and at 100 % |
+| `SPEC_GAMMA` | `0.62` lifts mid levels so quiet bands still show |
+| `SPEC_START_DEG` / `SPEC_END_DEG` | the arc the bars occupy (default: the upper half, which leaves the bottom free for the ticker) |
+| `SPEC_PULSE_R` / `SPEC_PULSE_W` | beat ring radius and thickness |
+
+PC-side knobs worth knowing:
+
+* `--audio-test` - print the eight levels live (no board needed) to check the capture;
+* `--audio-rate` - updates per second (lower it if the animation looks starved);
+* `--audio-gain DB` - manual boost on top of the auto-gain (try `+10` for very quiet mixes).
+
 ### Gauge geometry and timings
 
 | Group | What it controls |
@@ -419,6 +449,10 @@ A tidy way to make restyling a one-line change is to add `UI_FONT_SMALL` / `UI_F
   Without it the bridge still reports CPU/RAM/GPU/VRAM usage, and the temperature, power and fan
   fields show `--`.
 * The four shortcut buttons are optional and unconnected by default.
+* The audio spectrum needs `pyaudiowpatch` (`pip install pyaudiowpatch`); without it the bridge
+  logs a note and never sends `A,` messages. It captures the **default output device**, so
+  whatever Windows is playing is what you see. The auto-gain tracks the loudest band, so the
+  display looks right at any system volume, and it stays silent below the noise gate.
 
 ---
 
