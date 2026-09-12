@@ -1,4 +1,6 @@
-# VolumeControllerUART
+# Deskie
+
+I vibe coded this project based on my initial prototype.
 
 A desk-side volume and system-monitor controller for the **ESP32-S3 (N16R8)**, built around a
 240 × 240 round **GC9A01** display. An animated background plays behind a set of radial gauges,
