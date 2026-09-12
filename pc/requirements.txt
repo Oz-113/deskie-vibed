@@ -1,0 +1,26 @@
+# PC-side bridge for the ESP32-S3 UART Volume Controller
+#
+#   python -m venv .venv
+#   .venv\Scripts\activate
+#   pip install -r requirements.txt
+#   python controller.py --list
+#   python controller.py --port COM5
+#
+# ---- required --------------------------------------------------------------
+pyserial>=3.5          # USB serial transport
+psutil>=5.9            # CPU load / clock / cores, RAM usage
+
+# ---- required for volume control -------------------------------------------
+pycaw>=20240210        # Windows Core Audio master volume (pulls comtypes)
+comtypes>=1.2
+
+# ---- optional but strongly recommended (AMD / NVIDIA / Intel GPUs) ---------
+# Gives GPU temperature, hotspot, memory temperature, board power, fan speed
+# and exact VRAM totals. Install LibreHardwareMonitor once, then:
+#   pip install pythonnet
+pythonnet>=3.0
+
+# ---- optional: proper now-playing info (artist / title / play state) --------
+# Without it the script falls back to reading media window titles.
+# NOTE: winsdk has no wheels for Python 3.14 yet, so this may not install.
+# winsdk>=1.0.0b9
