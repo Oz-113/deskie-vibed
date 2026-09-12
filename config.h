@@ -23,7 +23,7 @@
 // ============================================================================
 #define FW_NAME              "VolumeControllerUART"
 #define FW_PROTOCOL_VERSION  1
-#define UART_BAUD            115200     // USB-CDC ignores this, kept for a classic UART
+#define UART_BAUD            921600     // USB-CDC ignores this, kept for a classic UART
 #define RX_LINE_MAX          192        // longest accepted command line
 #define RX_STALE_MS          1500       // no PC traffic for this long -> link marked down
 #define TX_QUEUE_LEN         32

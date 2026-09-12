@@ -1510,7 +1510,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="PC side bridge for the ESP32-S3 UART Volume Controller")
     p.add_argument("--port", help="serial port, e.g. COM5 (default: autodetect)")
-    p.add_argument("--baud", type=int, default=115200,
+    p.add_argument("--baud", type=int, default=921600,
                    help="nominal baud (USB CDC ignores it) - default 115200")
     p.add_argument("--list", action="store_true", help="list serial ports and exit")
     p.add_argument("--scan", action="store_true",
