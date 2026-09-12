@@ -1,6 +1,6 @@
 # Deskie
 
-I vibe coded this project based on my initial prototype.
+I had deepseek create this project based on my initial prototype.
 
 A desk-side volume and system-monitor controller for the **ESP32-S3 (N16R8)**, built around a
 240 × 240 round **GC9A01** display. An animated background plays behind a set of radial gauges,
@@ -37,7 +37,7 @@ CPU / RAM / GPU data by a small Python bridge over the USB serial link.
 ## Architecture
 
 ```
-   ┌────────────────────────────┐     USB-CDC serial (115200 8N1)     ┌────────────────────┐
+   ┌────────────────────────────┐   USB-Converter serial (921600 8N1) ┌────────────────────┐
    │  ESP32-S3  N16R8           │ <─────────────────────────────────> │  PC                │
    │  GC9A01 240x240 round TFT  │                                     │  controller.py     │
    │  rotary encoder + buttons  │   metrics  ->  S,/E,/V,/T,          │  psutil            │
